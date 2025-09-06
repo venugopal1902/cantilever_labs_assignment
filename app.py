@@ -7,8 +7,9 @@ import requests
 from io import BytesIO
 from xhtml2pdf import pisa
 import markdown2
-import fitz # PyMuPDF
+import fitz  # PyMuPDF
 from PIL import Image
+import base64
 
 # --- NEW IMPORTS for RAG with Vector DB ---
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -186,13 +187,36 @@ def get_wiki_content(topic):
         return ""
     return ""
 
-def create_pdf_from_markdown(markdown_text, title, image_url, image_caption):
-    """Converts Markdown text and an image into a downloadable PDF."""
-    html_content = markdown2.markdown(markdown_text, extras=["tables", "fenced-code-blocks"])
+def create_pdf_from_markdown(markdown_text, title, image_bytes, image_caption):
+    """
+    Converts Markdown text and an optional image (bytes) into a downloadable PDF.
+    Embeds image as Base64 data URI so the PDF includes the image reliably.
+    """
+    html_content = markdown2.markdown(markdown_text or "", extras=["tables", "fenced-code-blocks"])
     image_html = ""
-    if image_url:
-        image_html = f'<div style="text-align: center;"><img src="{image_url}" style="max-width: 80%; margin: 1em auto; border-radius: 8px;"><p><em>{image_caption}</em></p></div>'
-    
+    if image_bytes:
+        try:
+            mime = "image/png"
+            # try to detect mime type from bytes by opening with PIL
+            try:
+                img = Image.open(BytesIO(image_bytes))
+                fmt = img.format  # e.g., 'PNG', 'JPEG'
+                if fmt:
+                    mime = f"image/{fmt.lower()}"
+            except Exception:
+                # fallback to png
+                mime = "image/png"
+            b64_image = base64.b64encode(image_bytes).decode('utf-8')
+            image_html = (
+                f'<div style="text-align: center;">'
+                f'<img src="data:{mime};base64,{b64_image}" style="max-width: 80%; margin: 1em auto; border-radius: 8px;">'
+                f'<p><em>{image_caption}</em></p></div>'
+            )
+        except Exception as e:
+            # If embedding fails, continue without image
+            st.warning(f"Could not embed image into PDF: {e}")
+            image_html = ""
+
     css_style = """
     body { font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.6; color: #333; }
     h1, h2, h3 { color: #005a9c; border-bottom: 2px solid #f0f0f0; padding-bottom: 5px; }
@@ -203,11 +227,11 @@ def create_pdf_from_markdown(markdown_text, title, image_url, image_caption):
     blockquote { border-left: 4px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; }
     code { background-color: #f5f5f5; padding: 2px 5px; border-radius: 4px; font-family: 'Courier New', monospace; }
     """
-    full_html = f"<html><head><style>{css_style}</style></head><body><h1>{title}</h1>{image_html}{html_content}</body></html>"
-    
+    full_html = f"<html><head><meta charset='utf-8'><style>{css_style}</style></head><body><h1>{title}</h1>{image_html}{html_content}</body></html>"
+
     result = BytesIO()
     pdf = pisa.CreatePDF(BytesIO(full_html.encode("UTF-8")), dest=result)
-    
+
     if not pdf.err:
         return result.getvalue()
     else:
@@ -221,7 +245,6 @@ def parse_json_response(text, expected_keys):
     if not json_match:
         st.error("Could not find a valid JSON array in the AI's response.")
         return None
-    
     try:
         data = json.loads(json_match.group(0))
         if isinstance(data, list) and all(isinstance(item, dict) and all(key in item for key in expected_keys) for item in data):
@@ -367,7 +390,7 @@ if 'pre_class_doc' in st.session_state:
             if image_bytes:
                 st.image(image_bytes, caption=image_caption)
             st.markdown(st.session_state.pre_class_doc)
-            pdf_bytes = create_pdf_from_markdown(st.session_state.pre_class_doc, f"Pre-Class: {topic}", None if not image_bytes else wiki_image_url, image_caption)
+            pdf_bytes = create_pdf_from_markdown(st.session_state.pre_class_doc, f"Pre-Class: {topic}", image_bytes, image_caption)
             if pdf_bytes:
                 st.download_button("📥 Download as PDF", pdf_bytes, f"pre_class_{topic.replace(' ', '_')}.pdf", "application/pdf")
         else:
